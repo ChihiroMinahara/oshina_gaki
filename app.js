@@ -1,5 +1,5 @@
-/* お品書き帳 v2.3 — app.js
- * 仕様: 仕様書_お品書き帳.md v2.3
+/* お品書き帳 v2.4 — app.js
+ * 仕様: 仕様書_お品書き帳.md v2.4
  * 開発/検証用フック(通常は触らない):
  *   localStorage 'ohogaki_api_base' … GitHub APIベース差し替え(既定 https://api.github.com)
  *   localStorage 'ohogaki_fx_base'  … fxtwitterベース差し替え(既定 https://api.fxtwitter.com)
@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = 'v2.3.0';
+const APP_VERSION = 'v2.4.0';
 const DATA_VERSION = 3;
 const LS_KEY = 'ohogaki_cfg_v23';
 const IMG_CACHE_NAME = 'img-v1';
@@ -133,42 +133,132 @@ function sheet(opts){
   });
 }
 
-// ================= スペース番号パース =================
-const SP_SCAN_RE = /(東|西|南)\s*(?:ホール|館)?\s*([A-Z]{0,2})\s?(\d{1,2})\s*[-–ー−‐〜~]\s*(\d{1,2})/;
-const SP_KEY_RE = /^(東|西|南)\s*(?:ホール|館)?\s*([A-Z]{1,2})?\s*(\d{1,3})?\s*[-–ー−‐〜~]\s*(\d{1,3})/;
+// ================= スペース番号パース (v2) =================
+// 対応: 西3-15 / 東A 45-12 / 東A-12a / 西め-05b / 6号館C こ42a / 第一展示場 A-04b / く-85 / スペース:A-12 など
+const KANA_ORDER = 'ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをん';
+const SP_DIGIT_GUARD = '(?![0-9時分秒日月年円人枚冊種件])';
+const SP_SEP = '[-–ー−‐〜~]';
+
+function kanaRank(ch){
+  if(!ch) return 0;
+  const c = nfkc(String(ch)).replace(/[\u30a1-\u30f6]/g, (m2) => String.fromCharCode(m2.charCodeAt(0) - 0x60));
+  const i = KANA_ORDER.indexOf(c.charAt(0));
+  return i >= 0 ? i + 1 : 60;
+}
+function blockRank(b){
+  if(!b) return 0;
+  const t = nfkc(String(b)).toUpperCase();
+  if(/^[A-Z]{1,2}$/.test(t)) return t.charCodeAt(0) - 64;
+  return 40 + kanaRank(t);
+}
+function kanjiNum(s){
+  const map = { '一':1, '二':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9 };
+  s = String(s);
+  if(/^[0-9]+$/.test(s)) return parseInt(s, 10);
+  const m = s.match(/^([一二三四五六七八九]?)十([一二三四五六七八九]?)$/);
+  if(m) return (m[1] ? map[m[1]] : 1) * 10 + (m[2] ? map[m[2]] : 0);
+  return map[s] || null;
+}
 
 function parseSP(text){
   if(!text) return null;
   const t = nfkc(text).toUpperCase();
-  const m = t.match(SP_SCAN_RE);
-  if(!m) return null;
-  const hall = m[1], letters = m[2] || '', block = parseInt(m[3], 10), num = parseInt(m[4], 10);
-  if(!block || !num) return null;
-  const sp = letters ? `${hall}${letters} ${block}-${num}` : `${hall}${block}-${num}`;
-  return { sp, hall, letters, block, num };
+  const G = SP_DIGIT_GUARD, S = SP_SEP;
+  let m;
+  // ① 第N展示場 / 第Nホール(M3・幕張など): 「第一展示場 A-04b」「第2ホール B-12」
+  m = t.match(new RegExp('(第?\\s*[0-9一二三四五六七八九十]{1,2}\\s*(?:展示場|展示ホール|ホール))\\s*(?:([A-Z])\\s*' + S + '?\\s*|' + S + '\\s*)(\\d{1,3})' + G));
+  if(m){
+    const bld = m[1].replace(/\s+/g, '');
+    return { sp: bld + ' ' + (m[2] ? m[2] + '-' : '') + parseInt(m[3], 10) };
+  }
+  // ② N号館(インテックス大阪など): 「6号館C こ42a」「６号館Ｃ お34ｂ」
+  m = t.match(new RegExp('([0-9]{1,2})\\s*号館\\s*([A-Z])\\s*([あ-んァ-ヶ]{1,2})?\\s*' + S + '?\\s*(\\d{1,3})' + G));
+  if(m){
+    return { sp: m[1] + '号館' + m[2] + ' ' + (m[3] || '') + parseInt(m[4], 10) };
+  }
+  // ③ ホール+ブロック(英字/かな)+番号(コミケ系): 「東A-12a」「西め-05b」
+  m = t.match(new RegExp('(東|西|南|北)\\s*(?:ホール|館)?\\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})\\s*' + S + '\\s*(\\d{1,3})' + G));
+  if(m){
+    return { sp: m[1] + m[2] + '-' + parseInt(m[3], 10) };
+  }
+  // ④ ホール+数字-数字(ビッグサイト系): 「西3-15」「東A 45-12」「南ホール 1-5」
+  m = t.match(new RegExp('(東|西|南|北)\\s*(?:ホール|館)?\\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})?\\s*(\\d{1,2})\\s*' + S + '\\s*(\\d{1,3})' + G));
+  if(m){
+    const hall = m[1], blk = m[2] || '';
+    const n1 = parseInt(m[3], 10), n2 = parseInt(m[4], 10);
+    return { sp: blk ? (hall + blk + ' ' + n1 + '-' + n2) : (hall + n1 + '-' + n2) };
+  }
+  // ⑤ かな1文字-番号(文学フリマなど): 「く-85」
+  m = t.match(new RegExp('([あ-んァ-ヶ])\\s*' + S + '\\s*(\\d{1,3})' + G));
+  if(m){
+    return { sp: m[1] + '-' + parseInt(m[2], 10) };
+  }
+  // ⑥ 「スペースは A-12」のようなキーワード付き英字番号
+  m = t.match(new RegExp('(?:スペース|配置|ブース|No\\.?|番号)\\s*[:：は]?\\s*([A-Z]{1,2})\\s*' + S + '\\s*(\\d{1,3})' + G));
+  if(m){
+    return { sp: m[1] + '-' + parseInt(m[2], 10) };
+  }
+  return null;
+}
+
+// canonical SP文字列の解析(並び替え・セクション用)
+function analyzeSP(sp){
+  if(!sp) return null;
+  const t = nfkc(String(sp)).toUpperCase().trim();
+  let m;
+  // 号館: 6号館C こ42 / 6号館C 42
+  m = t.match(/^([0-9]{1,2}号館)\s*([A-Z])?\s*([あ-んァ-ヶ]{1,2})?\s*(\d{1,3})$/);
+  if(m){
+    const hallNum = parseInt(m[1], 10), letter = m[2] || '', blk = m[3] || '';
+    const lr = letter ? letter.charCodeAt(0) - 64 : 0;
+    return { key: [5, hallNum, lr * 1000 + kanaRank(blk), parseInt(m[4], 10)], label: m[1] + letter, skey: [5, hallNum, lr, 0, 0] };
+  }
+  // 展示場/ホール: 第一展示場 A-4 / 第2ホール B-12
+  m = t.match(/^(第?[0-9一二三四五六七八九十]{1,2}\s*(?:展示場|展示ホール|ホール))\s*([A-Z])?\s*-?\s*(\d{1,3})$/);
+  if(m){
+    const numStr = (m[1].match(/[0-9一二三四五六七八九十]{1,2}/) || [''])[0];
+    const letter = m[2] || '';
+    const lr = letter ? letter.charCodeAt(0) - 64 : 0;
+    const bld = m[1].replace(/\s+/g, '');
+    return { key: [6, kanjiNum(numStr) || 99, lr, 0, parseInt(m[3], 10)], label: bld + letter, skey: [6, kanjiNum(numStr) || 99, lr, 0, 0] };
+  }
+  // かな1文字: く-85
+  m = t.match(/^([あ-んァ-ヶ])\s*-\s*(\d{1,3})$/);
+  if(m){
+    return { key: [7, kanaRank(m[1]), 0, 0, parseInt(m[2], 10)], label: m[1], skey: [7, kanaRank(m[1]), 0, 0, 0] };
+  }
+  // 英字のみ: A-12
+  m = t.match(/^([A-Z]{1,2})\s*-\s*(\d{1,3})$/);
+  if(m){
+    const r = m[1].charCodeAt(0) - 64;
+    return { key: [8, r, 0, 0, parseInt(m[2], 10)], label: m[1], skey: [8, r, 0, 0, 0] };
+  }
+  // ホール+ブロック: 東A-12 / 西め-5 / 東A 45-12
+  m = t.match(/^(東|西|南|北)\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})\s*(?:(\d{1,2})?\s*[-–ー−‐〜~]\s*)?(\d{1,3})$/);
+  if(m){
+    const hall = m[1], blk = m[2];
+    const rank = (hall === '東') ? 0 : (hall === '北') ? 2 : (hall === '西') ? 3 : 4;
+    return { key: [rank, blockRank(blk), m[3] ? parseInt(m[3], 10) : 0, parseInt(m[4], 10)], label: hall + blk, skey: [rank, blockRank(blk), 0, 0, 0] };
+  }
+  // ホール+数字: 西3-15 / 東7-8
+  m = t.match(/^(東|西|南|北)\s*(\d{1,2})\s*[-–ー−‐〜~]\s*(\d{1,3})$/);
+  if(m){
+    const hall = m[1];
+    const rank = (hall === '東') ? 1 : (hall === '北') ? 2 : (hall === '西') ? 3 : 4;
+    return { key: [rank, 0, parseInt(m[2], 10), parseInt(m[3], 10)], label: hall + m[2], skey: [rank, parseInt(m[2], 10), 0, 0, 0] };
+  }
+  return null;
 }
 
 function spSortKey(sp){
-  if(!sp) return null;
-  const t = nfkc(sp).toUpperCase();
-  const m = t.match(SP_KEY_RE);
-  if(!m) return null;
-  const hall = m[1], letters = m[2] || '', block = parseInt(m[3] || '0', 10), num = parseInt(m[4] || '0', 10);
-  let rank;
-  if(hall === '東') rank = letters ? 0 : 1;
-  else if(hall === '西') rank = 2;
-  else rank = 3;
-  if(letters) return [rank, letters.charCodeAt(0) - 64, block, num];
-  return [rank, 0, block, num];
+  const a = analyzeSP(sp);
+  return a ? a.key : null;
 }
 
 function sectionOf(sp){
-  const k = spSortKey(sp);
-  if(!k) return { label: 'SP未設定', key: [9, 0, 0, 0] };
-  const t = nfkc(sp).toUpperCase();
-  const m = t.match(/^(東|西|南)\s*(?:ホール|館)?\s*([A-Z]{1,2})?\s*(\d{1,3})?/);
-  const hall = m[1], letters = m[2] || '', block = m[3] || '';
-  return { label: hall + (letters || block), key: [k[0], letters ? k[1] : k[2], 0, 0] };
+  const a = analyzeSP(sp);
+  if(!a) return { label: 'SP未設定', key: [9, 0, 0, 0, 0] };
+  return { label: a.label, key: a.skey };
 }
 
 const SP_TESTS = [
@@ -185,6 +275,16 @@ const SP_TESTS = [
   ['東京ビッグサイト 西4-2', '西4-2'],
   ['東1-2 / 東1-3', '東1-2'],
   ['https://x.com/user/status/1234567890123456789', null],
+  ['東A-12a 新刊あります', '東A-12'],
+  ['西め-05b 【新刊】', '西め-5'],
+  ['配置は、【く-85】祀色工房です', 'く-85'],
+  ['6号館C こ42a YANKEE.', '6号館C こ42'],
+  ['🐶インテ大阪 ６号館Ｃ お34ｂ', '6号館C お34'],
+  ['スペース：第一展示場 A-04b', '第一展示場 A-4'],
+  ['第2ホール B-12 にいます', '第2ホール B-12'],
+  ['スペースは A-12 です', 'A-12'],
+  ['6号館Cで10時から開始', null],
+  ['第一展示場でお待ちしてます', null],
 ];
 
 // ================= IndexedDB =================
@@ -513,6 +613,8 @@ async function touchEvent(rec){
 }
 
 // ================= 補完(fxtwitter) =================
+const MEDIA_CAP = 12;
+
 async function fxFetch(id){
   const res = await fetch(fxBase() + '/status/' + id, { cache: 'no-store' });
   if(!res.ok) throw new Error('HTTP ' + res.status);
@@ -521,27 +623,72 @@ async function fxFetch(id){
   return j;
 }
 
-function collectMedia(t){
+// ツイート本体+スレッド(自己リプライ)をまとめて取得。失敗時は呼び出し側で従来APIにフォールバック
+async function fxFetchThread(id){
+  const res = await fetch(fxBase() + '/2/thread/' + id, { cache: 'no-store' });
+  if(!res.ok) throw new Error('HTTP ' + res.status);
+  const j = await res.json();
+  if(!j || (j.code && j.code !== 200) || !j.status) throw new Error((j && j.message) || 'APIエラー');
+  return j;
+}
+
+// 画像収集: 本体 → 引用元 → 自分の続きツイート(ツリー)の順。最大 MEDIA_CAP 枚
+function collectMediaAll(head, thread, quote){
   const out = [];
-  const md = t.media || {};
-  for(const p of (md.photos || [])){ if(p && p.url) out.push(p.url); }
-  for(const v of (md.videos || [])){ if(v && v.thumbnail_url) out.push(v.thumbnail_url); }
+  const add = (u) => { if(u && out.length < MEDIA_CAP && out.indexOf(u) < 0) out.push(u); };
+  const pushMedia = (md) => {
+    if(!md) return;
+    for(const p of (md.photos || [])) add(p && p.url);
+    for(const v of (md.videos || [])) add(v && v.thumbnail_url);
+  };
+  pushMedia(head && head.media);
+  pushMedia(quote && quote.media);
+  for(const s of (thread || [])){
+    if(out.length >= MEDIA_CAP) break;
+    if(!s || !s.id || s.id === (head && head.id)) continue;
+    if(s.author && head && head.author && s.author.id !== head.author.id) continue;
+    if(Number(s.created_timestamp || 0) < Number((head && head.created_timestamp) || 0)) continue;
+    pushMedia(s.media);
+  }
   return out;
 }
 
+// スペース表記の抽出: 本体 → 引用元 → 続きツイートの順に探す
+function parseSPFromEntry(head, thread, quote){
+  let p = parseSP((head && head.text) || '');
+  if(!p && quote && quote.text) p = parseSP(quote.text);
+  if(!p){
+    for(const s of (thread || [])){
+      if(!s || !s.id || s.id === (head && head.id)) continue;
+      if(s.author && head && head.author && s.author.id !== head.author.id) continue;
+      p = parseSP(s.text || '');
+      if(p) break;
+    }
+  }
+  return p;
+}
+
 async function enrichOne(entry){
-  const j = await fxFetch(entry.id);
-  const t = j.tweet;
-  if(!t) throw new Error('ツイートを取得できません');
+  let head = null, thread = [], quote = null;
+  try{
+    const j = await fxFetchThread(entry.id);
+    head = j.status;
+    thread = Array.isArray(j.thread) ? j.thread : [];
+  }catch(err){
+    const j = await fxFetch(entry.id); // 従来APIへフォールバック
+    head = j.tweet;
+  }
+  if(!head) throw new Error('ツイートを取得できません');
+  quote = head.quote || null;
   const rec = await idbGet('entries', entry.key);
   if(!rec || rec.deletedAt) return;
-  rec.name = (t.author && t.author.name) || rec.name || '';
-  rec.handle = (t.author && t.author.screen_name) ? ('@' + t.author.screen_name) : (rec.handle || '');
-  rec.text = t.text || '';
-  if(t.url) rec.url = t.url;
-  rec.media = collectMedia(t);
+  rec.name = (head.author && head.author.name) || rec.name || '';
+  rec.handle = (head.author && head.author.screen_name) ? ('@' + head.author.screen_name) : (rec.handle || '');
+  rec.text = head.text || '';
+  if(head.url) rec.url = head.url;
+  rec.media = collectMediaAll(head, thread, quote);
   if(!rec.spManual){
-    const p = parseSP(t.text || '');
+    const p = parseSPFromEntry(head, thread, quote);
     if(p) rec.sp = p.sp;
   }
   rec.enriched = true;
@@ -550,9 +697,11 @@ async function enrichOne(entry){
 
 const enrichQueue = [];
 let enrichBusy = false;
-function enqueueEnrich(tweetId){
+function enqueueEnrich(tweetId, force){
   if(!tweetId) return;
-  if(!enrichQueue.includes(tweetId)) enrichQueue.push(tweetId);
+  const exq = enrichQueue.find(q => q.id === tweetId);
+  if(exq){ if(force) exq.force = true; }
+  else enrichQueue.push({ id: tweetId, force: !!force });
   pumpEnrich();
 }
 async function pumpEnrich(){
@@ -560,17 +709,19 @@ async function pumpEnrich(){
   enrichBusy = true;
   try{
     while(enrichQueue.length){
-      const id = enrichQueue.shift();
-      const targets = (await idbAll('entries')).filter(e => e.id === id && !e.enriched && !e.deletedAt);
+      const job = enrichQueue.shift();
+      const targets = (await idbAll('entries')).filter(e => e.id === job.id && !e.deletedAt && (job.force || !e.enriched));
       for(const e of targets){
         try{ await enrichOne(e); }catch(err){ /* 失敗は保留のまま(手動再取得可) */ }
         await sleep(250);
       }
       await reloadAll();
       renderCurrent();
+      updateReenrichInfo();
     }
   }finally{
     enrichBusy = false;
+    updateReenrichInfo();
   }
 }
 // 未取得エントリの再補完(オンライン復帰時・起動時に呼ぶ。成功するまで繰り返すのではなく、その場で1回試行)
@@ -915,9 +1066,9 @@ function renderCard(e){
   const linkBtn = el('button', { class: 'link', text: '🔗', title: '元ツイートを開く' });
   linkBtn.addEventListener('click', () => window.open(e.url, '_blank', 'noopener'));
   actions.append(linkBtn);
-  if(!e.enriched){
-    const reBtn = el('button', { text: '🔄 取得', title: '情報を再取得' });
-    reBtn.addEventListener('click', () => { toast('再取得を試します…'); enqueueEnrich(e.id); });
+  {
+    const reBtn = el('button', { text: '🔄 再取得', title: '最新の情報で取り直す(画像・スペース等)' });
+    reBtn.addEventListener('click', () => { toast('再取得しています…(数秒〜)'); enqueueEnrich(e.id, true); });
     actions.append(reBtn);
   }
   main.append(actions);
@@ -983,22 +1134,181 @@ function startSpEdit(card, e){
 
 function openLightbox(e){
   if(!e.media || !e.media.length) return;
+  const media = e.media.slice();
+  let idx = 0, scale = 1, tx = 0, ty = 0;
   const ov = openOverlay('lightbox');
   const bar = el('div', { id: 'lbBar' });
-  const label = el('span', { text: (e.name || '') + (e.media.length > 1 ? ` (${e.media.length}枚)` : '') });
+  const label = el('span', { class: 'lbname', text: e.name || '' });
+  const counter = el('span', { class: 'lbcnt', text: '' });
   const closeBtn = el('button', { text: '✕ 閉じる' });
-  closeBtn.addEventListener('click', closeOverlay);
-  bar.append(label, closeBtn);
+  bar.append(label, counter, closeBtn);
   const stage = el('div', { id: 'lbStage' });
-  for(const m of e.media){
-    const img = el('img', { src: imgUrl(m, 'large'), alt: '' });
-    img.addEventListener('error', () => {
-      if(img.dataset.fb !== '1'){ img.dataset.fb = '1'; img.src = m; }
-    });
-    stage.append(img);
+  const img = el('img', { alt: '', draggable: 'false' });
+  stage.append(img);
+  const navs = [];
+  if(media.length > 1){
+    const prevBtn = el('button', { class: 'lbnav lbprev', text: '‹', title: '前へ' });
+    const nextBtn = el('button', { class: 'lbnav lbnext', text: '›', title: '次へ' });
+    prevBtn.addEventListener('click', (ev) => { ev.stopPropagation(); go(-1); });
+    nextBtn.addEventListener('click', (ev) => { ev.stopPropagation(); go(1); });
+    stage.append(prevBtn, nextBtn);
+    navs.push(prevBtn, nextBtn);
   }
   ov.append(bar, stage);
-  ov.onclick = (ev2) => { if(ev2.target === ov) closeOverlay(); };
+
+  function apply(animate){
+    img.style.transition = animate ? 'transform .18s ease-out' : 'none';
+    img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+  }
+  function clampPan(){
+    const sw = stage.clientWidth, sh = stage.clientHeight;
+    const iw = img.clientWidth * scale, ih = img.clientHeight * scale;
+    const mx = Math.max(0, (iw - sw) / 2), my = Math.max(0, (ih - sh) / 2);
+    tx = Math.min(mx, Math.max(-mx, tx));
+    ty = Math.min(my, Math.max(-my, ty));
+  }
+  function resetZoom(){ scale = 1; tx = 0; ty = 0; apply(false); }
+  function setZoom(ns, px, py){
+    ns = Math.min(6, Math.max(1, ns));
+    if(ns === 1){ scale = 1; tx = 0; ty = 0; apply(true); return; }
+    const dx = px - stage.clientWidth / 2, dy = py - stage.clientHeight / 2;
+    scale = ns;
+    tx = dx * (1 - ns);
+    ty = dy * (1 - ns);
+    clampPan();
+    apply(true);
+  }
+  function update(){
+    resetZoom();
+    img.dataset.fb = '';
+    img.src = imgUrl(media[idx], 'large');
+    counter.textContent = (idx + 1) + ' / ' + media.length;
+    if(navs.length){
+      navs[0].disabled = idx === 0;
+      navs[1].disabled = idx === media.length - 1;
+    }
+    for(const d of [-1, 1]){
+      const n = idx + d;
+      if(n >= 0 && n < media.length){ const pre = new Image(); pre.src = imgUrl(media[n], 'large'); }
+    }
+  }
+  img.addEventListener('error', () => {
+    if(img.dataset.fb !== '1'){ img.dataset.fb = '1'; img.src = media[idx]; }
+  });
+  img.addEventListener('load', () => { clampPan(); });
+  function go(d){
+    const n = idx + d;
+    if(n < 0 || n >= media.length) return;
+    idx = n;
+    update();
+  }
+  function onKey(ev){
+    if(ev.key === 'ArrowLeft') go(-1);
+    else if(ev.key === 'ArrowRight') go(1);
+    else if(ev.key === 'Escape') closeLb();
+  }
+  function closeLb(){
+    document.removeEventListener('keydown', onKey);
+    closeOverlay();
+  }
+  closeBtn.addEventListener('click', closeLb);
+  ov.onclick = (ev2) => { if(ev2.target === ov) closeLb(); };
+  document.addEventListener('keydown', onKey);
+
+  // ジェスチャ: スワイプで切替 / ピンチ・ダブルタップで拡大 / 拡大中はドラッグで移動
+  const pointers = new Map();
+  let dragStart = null, pinchStart = null, lastTap = 0, lastTapX = 0, lastTapY = 0, moved = false;
+  function localPt(ev3){
+    const r = stage.getBoundingClientRect();
+    return { x: ev3.clientX - r.left, y: ev3.clientY - r.top };
+  }
+  stage.addEventListener('pointerdown', (ev3) => {
+    if(ev3.target && ev3.target.closest && ev3.target.closest('.lbnav')) return;
+    if(ev3.cancelable) ev3.preventDefault();
+    try{ stage.setPointerCapture(ev3.pointerId); }catch(err){ /* ignore */ }
+    pointers.set(ev3.pointerId, { x: ev3.clientX, y: ev3.clientY });
+    moved = false;
+    if(pointers.size === 2){
+      const pts = Array.from(pointers.values());
+      pinchStart = {
+        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+        scale: scale, tx: tx, ty: ty,
+        sx: (pts[0].x + pts[1].x) / 2, sy: (pts[0].y + pts[1].y) / 2,
+      };
+      dragStart = null;
+    }else if(pointers.size === 1){
+      dragStart = { x: ev3.clientX, y: ev3.clientY, tx: tx, ty: ty };
+      pinchStart = null;
+    }
+  });
+  stage.addEventListener('pointermove', (ev3) => {
+    if(!pointers.has(ev3.pointerId)) return;
+    pointers.set(ev3.pointerId, { x: ev3.clientX, y: ev3.clientY });
+    if(pointers.size >= 2 && pinchStart){
+      const pts = Array.from(pointers.values());
+      const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if(pinchStart.dist > 0){
+        scale = Math.min(6, Math.max(1, pinchStart.scale * (d / pinchStart.dist)));
+        const cx = (pts[0].x + pts[1].x) / 2, cy = (pts[0].y + pts[1].y) / 2;
+        tx = pinchStart.tx + (cx - pinchStart.sx);
+        ty = pinchStart.ty + (cy - pinchStart.sy);
+        clampPan();
+        apply(false);
+      }
+    }else if(dragStart){
+      const dx = ev3.clientX - dragStart.x, dy = ev3.clientY - dragStart.y;
+      if(scale > 1){
+        tx = dragStart.tx + dx; ty = dragStart.ty + dy;
+        clampPan();
+        apply(false);
+        if(Math.abs(dx) > 6 || Math.abs(dy) > 6) moved = true;
+      }else if(Math.abs(dx) > 8 || Math.abs(dy) > 8){
+        moved = true;
+      }
+    }
+  });
+  function endPointer(ev3){
+    if(!pointers.has(ev3.pointerId)) return;
+    pointers.delete(ev3.pointerId);
+    if(pointers.size === 1){
+      // 2本→1本: 残った指でパン継続できるよう基準を取り直す
+      const rest = Array.from(pointers.values())[0];
+      dragStart = { x: rest.x, y: rest.y, tx: tx, ty: ty };
+      pinchStart = null;
+    }else if(pointers.size === 0){
+      pinchStart = null;
+      const d = dragStart ? (ev3.clientX - dragStart.x) : 0;
+      dragStart = null;
+      if(scale <= 1.01 && !moved){
+        const t = Date.now();
+        const pt = localPt(ev3);
+        if(ev3.pointerType !== 'mouse' && t - lastTap < 320 && Math.abs(pt.x - lastTapX) < 40 && Math.abs(pt.y - lastTapY) < 40){
+          if(scale > 1) resetZoom(); else setZoom(2.5, pt.x, pt.y);
+          lastTap = 0;
+        }else{
+          lastTap = t; lastTapX = pt.x; lastTapY = pt.y;
+        }
+      }else if(scale <= 1.01 && Math.abs(d) > 60){
+        go(d < 0 ? 1 : -1);
+        resetZoom();
+      }
+    }
+  }
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+  stage.addEventListener('dblclick', (ev3) => {
+    ev3.preventDefault();
+    const pt = localPt(ev3);
+    if(scale > 1) resetZoom(); else setZoom(2.5, pt.x, pt.y);
+  });
+  stage.addEventListener('wheel', (ev3) => {
+    ev3.preventDefault();
+    const pt = localPt(ev3);
+    const ns = ev3.deltaY < 0 ? scale * 1.15 : scale / 1.15;
+    if(ns <= 1) resetZoom(); else setZoom(ns, pt.x, pt.y);
+  }, { passive: false });
+
+  update();
 }
 
 function renderManage(){
@@ -1210,6 +1520,28 @@ async function importJsonText(text){
   toast('インポートしました(' + n + '件反映)');
 }
 
+// ================= 全件再取得 =================
+function updateReenrichInfo(){
+  const info = $('#reenrichInfo');
+  if(!info) return;
+  const remain = enrichQueue.length + (enrichBusy ? 1 : 0);
+  if(remain > 0) info.textContent = '再取得中… 残り ' + remain + ' 件';
+  else if(info.textContent && info.textContent.indexOf('再取得中') === 0) info.textContent = '完了しました ✓';
+}
+async function reenrichAll(){
+  const list = S.entries.filter(e => !e.deletedAt && e.id && e.eventId === S.currentEvent);
+  if(!list.length){ toast('このイベントに項目がありません'); return; }
+  const ok = await dialog({
+    title: '全件の情報を再取得',
+    message: 'このイベントの ' + list.length + ' 件について、名前・画像・スペースを最新のロジックで取り直します。件数が多いと数分かかります(画面を閉じても続行します)。',
+    buttons: [{ label: 'キャンセル', value: null }, { label: '再取得する', primary: true, value: true }],
+  });
+  if(!ok) return;
+  for(const e of list) enqueueEnrich(e.id, true);
+  toast(list.length + '件の再取得を開始しました');
+  updateReenrichInfo();
+}
+
 // ================= 診断 =================
 async function runDiagnostics(){
   const out = $('#stDiagOut');
@@ -1247,9 +1579,15 @@ async function runDiagnostics(){
   const sample = S.entries.find(e => !e.deletedAt && e.id);
   if(sample){
     try{
-      const j = await fxFetch(sample.id);
-      add(!!(j && j.tweet), 'fxtwitter: OK(' + ((j.tweet.author && j.tweet.author.name) || '') + ')');
-    }catch(err){ add(false, 'fxtwitter: ' + err.message); }
+      const j = await fxFetchThread(sample.id);
+      const th = Array.isArray(j.thread) ? j.thread.length : 0;
+      add(!!(j && j.status), 'fxtwitter: OK(' + ((j.status.author && j.status.author.name) || '') + ' / スレッド' + th + '件)');
+    }catch(err){
+      try{
+        const j2 = await fxFetch(sample.id);
+        add(!!(j2 && j2.tweet), 'fxtwitter(v1): OK(' + ((j2.tweet.author && j2.tweet.author.name) || '') + ') ※スレッドAPI失敗');
+      }catch(err2){ add(false, 'fxtwitter: ' + err2.message); }
+    }
   }else{
     add(null, 'fxtwitter: エントリが無いためスキップ');
   }
@@ -1380,6 +1718,7 @@ function bindUI(){
     toast('イベントを作成しました ✓');
   });
   $('#prefetchBtn').addEventListener('click', prefetchAll);
+  $('#reenrichBtn').addEventListener('click', reenrichAll);
   $('#stSaveTest').addEventListener('click', saveAndTest);
   $('#stPull').addEventListener('click', async () => {
     if(!syncConfigured()){ toast('先に同期設定をしてください'); return; }

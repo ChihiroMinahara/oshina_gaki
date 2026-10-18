@@ -131,9 +131,16 @@ pre{white-space:pre-wrap; word-break:break-all; background:var(--card); border:1
 .item{display:block; width:100%; text-align:left; background:none; border:none; padding:13px 18px; font-size:15px; border-bottom:1px solid var(--line)}
 .item:last-child{border-bottom:none}
 .item .sub{font-size:12px; color:var(--muted)}
-#lbStage{flex:1; display:flex; overflow-x:auto; scroll-snap-type:x mandatory}
-#lbStage img{width:100vw; height:100%; object-fit:contain; scroll-snap-align:center; flex:0 0 100vw}
+#lbStage{position:relative; flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; touch-action:none; cursor:grab}
+#lbStage:active{cursor:grabbing}
+#lbStage img{max-width:100%; max-height:100%; transform-origin:center center; user-select:none; -webkit-user-drag:none; pointer-events:none}
+.lbnav{position:absolute; top:50%; transform:translateY(-50%); background:rgba(255,255,255,.15); border:none; color:#fff; font-size:26px; line-height:1; width:44px; height:64px; border-radius:10px; z-index:2; cursor:pointer}
+.lbnav:disabled{opacity:.2}
+.lbprev{left:8px}
+.lbnext{right:8px}
 #lbBar{color:#fff; display:flex; justify-content:space-between; align-items:center; padding:var(--topbarh) 14px 12px; gap:10px}
+#lbBar .lbname{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+#lbBar .lbcnt{font-weight:700; font-size:13px; opacity:.9; white-space:nowrap}
 #lbBar button{background:rgba(255,255,255,.15); border:none; color:#fff; border-radius:8px; padding:8px 16px; font-size:14px}
 </style>
 </head>
@@ -190,6 +197,12 @@ pre{white-space:pre-wrap; word-break:break-all; background:var(--card); border:1
       <button id="prefetchBtn" class="btn">全件先読み</button>
       <div id="prefetchInfo" class="hint"></div>
     </div>
+    <div class="block">
+      <h2>全件の情報を再取得</h2>
+      <p class="hint">現在のイベントの全項目について、名前・画像・スペースを最新の取得ロジックで取り直します(引用元や自分の続きツイートの画像も対象)。件数が多いと数分かかります。</p>
+      <button id="reenrichBtn" class="btn">全件再取得</button>
+      <div id="reenrichInfo" class="hint"></div>
+    </div>
   </section>
 
   <!-- ======== 設定 ======== -->
@@ -219,12 +232,14 @@ pre{white-space:pre-wrap; word-break:break-all; background:var(--card); border:1
     <div class="block">
       <h2>ガイド</h2>
       <h3>iPhone: ショートカット</h3>
-      <pre id="guideText">1. ショートカットアプリ → 新規
-2. 「共有シートで受け取る」ON(詳細設定)
-3. アクション: 「共有シート入力からURLを取得」
-4. アクション: 「Webページを開く」
-   URL = https://chihirominahara.github.io/oshina_gaki/?add=[共有シートのURL]
-5. 名前「お品書き追加」で保存</pre>
+      <pre id="guideText">iOS 26の手順:
+1. ショートカットアプリ → 新規作成 → 名前「お品書き追加」
+2. 下部ツールバーの ⓘ(詳細) → 「共有シートに表示」をON → 完了
+3. (推奨) 先頭の入力アクションの「◯個」→ 消去 → URLだけON
+4. アクション「URLを開く」を追加
+   URL = https://chihirominahara.github.io/oshina_gaki/?add=
+   の末尾に「変数を選択」→「ショートカットの入力」を挿入
+5. Xのツイート → 共有 → お品書き追加</pre>
       <button id="copyShortcut" class="btn">ガイドをコピー</button>
       <h3>PC: ブックマークレット</h3>
       <p class="hint">ブックマークに登録して、Xのツイート画面で押すと追加できます。</p>
