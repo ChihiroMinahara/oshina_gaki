@@ -1,5 +1,5 @@
-/* お品書き帳 v2.4 — app.js
- * 仕様: 仕様書_お品書き帳.md v2.4
+/* お品書き帳 v2.4.1 — app.js
+ * 仕様: 仕様書_お品書き帳.md v2.4.1
  * 開発/検証用フック(通常は触らない):
  *   localStorage 'ohogaki_api_base' … GitHub APIベース差し替え(既定 https://api.github.com)
  *   localStorage 'ohogaki_fx_base'  … fxtwitterベース差し替え(既定 https://api.fxtwitter.com)
@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = 'v2.4.0';
+const APP_VERSION = 'v2.4.1';
 const DATA_VERSION = 3;
 const LS_KEY = 'ohogaki_cfg_v23';
 const IMG_CACHE_NAME = 'img-v1';
@@ -133,8 +133,26 @@ function sheet(opts){
   });
 }
 
+// カードの「…」メニュー(元ツイート / 再取得)
+function openEntryMenu(e){
+  const ov = openOverlay('sheet');
+  const panel = el('div', { class: 'sheet-panel' });
+  panel.append(el('div', { class: 'sheet-title', text: e.name || 'その他の操作' }));
+  const linkItem = el('button', { class: 'item' },
+    el('div', { text: '🔗 元ツイートを開く' }));
+  linkItem.addEventListener('click', () => { closeOverlay(); window.open(e.url, '_blank', 'noopener'); });
+  const reItem = el('button', { class: 'item' },
+    el('div', { text: '🔄 情報を再取得' }),
+    el('div', { class: 'sub', text: '画像・スペース等を最新で取り直す' }));
+  reItem.addEventListener('click', () => { closeOverlay(); toast('再取得しています…(数秒〜)'); enqueueEnrich(e.id, true); });
+  panel.append(linkItem, reItem);
+  ov.append(panel);
+  ov.onclick = (ev2) => { if(ev2.target === ov) closeOverlay(); };
+}
+
 // ================= スペース番号パース (v2) =================
 // 対応: 西3-15 / 東A 45-12 / 東A-12a / 西め-05b / 6号館C こ42a / 第一展示場 A-04b / く-85 / スペース:A-12 など
+// 末尾の分岐小文字(a〜e)は別サークル識別のため保持して表示・ソートする
 const KANA_ORDER = 'ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをん';
 const SP_DIGIT_GUARD = '(?![0-9時分秒日月年円人枚冊種件])';
 const SP_SEP = '[-–ー−‐〜~]';
@@ -151,6 +169,11 @@ function blockRank(b){
   if(/^[A-Z]{1,2}$/.test(t)) return t.charCodeAt(0) - 64;
   return 40 + kanaRank(t);
 }
+function branchRank(b){
+  if(!b) return 0;
+  const c = String(b).toLowerCase().charCodeAt(0);
+  return (c >= 97 && c <= 101) ? (c - 96) : 0;
+}
 function kanjiNum(s){
   const map = { '一':1, '二':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9 };
   s = String(s);
@@ -163,40 +186,46 @@ function kanjiNum(s){
 function parseSP(text){
   if(!text) return null;
   const t = nfkc(text).toUpperCase();
-  const G = SP_DIGIT_GUARD, S = SP_SEP;
-  let m;
+  const G = SP_DIGIT_GUARD, S = SP_SEP, B = '(?:([A-Ea-e])(?![A-Za-z]))?';
+  let m, br;
   // ① 第N展示場 / 第Nホール(M3・幕張など): 「第一展示場 A-04b」「第2ホール B-12」
-  m = t.match(new RegExp('(第?\\s*[0-9一二三四五六七八九十]{1,2}\\s*(?:展示場|展示ホール|ホール))\\s*(?:([A-Z])\\s*' + S + '?\\s*|' + S + '\\s*)(\\d{1,3})' + G));
+  m = t.match(new RegExp('(第?\\s*[0-9一二三四五六七八九十]{1,2}\\s*(?:展示場|展示ホール|ホール))\\s*(?:([A-Z])\\s*' + S + '?\\s*|' + S + '\\s*)(\\d{1,3})' + B + G));
   if(m){
+    br = m[4] ? m[4].toLowerCase() : '';
     const bld = m[1].replace(/\s+/g, '');
-    return { sp: bld + ' ' + (m[2] ? m[2] + '-' : '') + parseInt(m[3], 10) };
+    return { sp: bld + ' ' + (m[2] ? m[2] + '-' : '') + parseInt(m[3], 10) + br };
   }
   // ② N号館(インテックス大阪など): 「6号館C こ42a」「６号館Ｃ お34ｂ」
-  m = t.match(new RegExp('([0-9]{1,2})\\s*号館\\s*([A-Z])\\s*([あ-んァ-ヶ]{1,2})?\\s*' + S + '?\\s*(\\d{1,3})' + G));
+  m = t.match(new RegExp('([0-9]{1,2})\\s*号館\\s*([A-Z])\\s*([あ-んァ-ヶ]{1,2})?\\s*' + S + '?\\s*(\\d{1,3})' + B + G));
   if(m){
-    return { sp: m[1] + '号館' + m[2] + ' ' + (m[3] || '') + parseInt(m[4], 10) };
+    br = m[5] ? m[5].toLowerCase() : '';
+    return { sp: m[1] + '号館' + m[2] + ' ' + (m[3] || '') + parseInt(m[4], 10) + br };
   }
   // ③ ホール+ブロック(英字/かな)+番号(コミケ系): 「東A-12a」「西め-05b」
-  m = t.match(new RegExp('(東|西|南|北)\\s*(?:ホール|館)?\\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})\\s*' + S + '\\s*(\\d{1,3})' + G));
+  m = t.match(new RegExp('(東|西|南|北)\\s*(?:ホール|館)?\\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})\\s*' + S + '\\s*(\\d{1,3})' + B + G));
   if(m){
-    return { sp: m[1] + m[2] + '-' + parseInt(m[3], 10) };
+    br = m[4] ? m[4].toLowerCase() : '';
+    return { sp: m[1] + m[2] + '-' + parseInt(m[3], 10) + br };
   }
   // ④ ホール+数字-数字(ビッグサイト系): 「西3-15」「東A 45-12」「南ホール 1-5」
-  m = t.match(new RegExp('(東|西|南|北)\\s*(?:ホール|館)?\\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})?\\s*(\\d{1,2})\\s*' + S + '\\s*(\\d{1,3})' + G));
+  m = t.match(new RegExp('(東|西|南|北)\\s*(?:ホール|館)?\\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})?\\s*(\\d{1,2})\\s*' + S + '\\s*(\\d{1,3})' + B + G));
   if(m){
+    br = m[5] ? m[5].toLowerCase() : '';
     const hall = m[1], blk = m[2] || '';
     const n1 = parseInt(m[3], 10), n2 = parseInt(m[4], 10);
-    return { sp: blk ? (hall + blk + ' ' + n1 + '-' + n2) : (hall + n1 + '-' + n2) };
+    return { sp: (blk ? (hall + blk + ' ' + n1 + '-' + n2) : (hall + n1 + '-' + n2)) + br };
   }
   // ⑤ かな1文字-番号(文学フリマなど): 「く-85」
-  m = t.match(new RegExp('([あ-んァ-ヶ])\\s*' + S + '\\s*(\\d{1,3})' + G));
+  m = t.match(new RegExp('([あ-んァ-ヶ])\\s*' + S + '\\s*(\\d{1,3})' + B + G));
   if(m){
-    return { sp: m[1] + '-' + parseInt(m[2], 10) };
+    br = m[3] ? m[3].toLowerCase() : '';
+    return { sp: m[1] + '-' + parseInt(m[2], 10) + br };
   }
   // ⑥ 「スペースは A-12」のようなキーワード付き英字番号
-  m = t.match(new RegExp('(?:スペース|配置|ブース|No\\.?|番号)\\s*[:：は]?\\s*([A-Z]{1,2})\\s*' + S + '\\s*(\\d{1,3})' + G));
+  m = t.match(new RegExp('(?:スペース|配置|ブース|No\\.?|番号)\\s*[:：は]?\\s*([A-Z]{1,2})\\s*' + S + '\\s*(\\d{1,3})' + B + G));
   if(m){
-    return { sp: m[1] + '-' + parseInt(m[2], 10) };
+    br = m[3] ? m[3].toLowerCase() : '';
+    return { sp: m[1] + '-' + parseInt(m[2], 10) + br };
   }
   return null;
 }
@@ -206,46 +235,46 @@ function analyzeSP(sp){
   if(!sp) return null;
   const t = nfkc(String(sp)).toUpperCase().trim();
   let m;
-  // 号館: 6号館C こ42 / 6号館C 42
-  m = t.match(/^([0-9]{1,2}号館)\s*([A-Z])?\s*([あ-んァ-ヶ]{1,2})?\s*(\d{1,3})$/);
+  // 号館: 6号館C こ42a / 6号館C 42b
+  m = t.match(/^([0-9]{1,2}号館)\s*([A-Z])?\s*([あ-んァ-ヶ]{1,2})?\s*(\d{1,3})([A-Z])?$/);
   if(m){
     const hallNum = parseInt(m[1], 10), letter = m[2] || '', blk = m[3] || '';
     const lr = letter ? letter.charCodeAt(0) - 64 : 0;
-    return { key: [5, hallNum, lr * 1000 + kanaRank(blk), parseInt(m[4], 10)], label: m[1] + letter, skey: [5, hallNum, lr, 0, 0] };
+    return { key: [5, hallNum, lr * 1000 + kanaRank(blk), parseInt(m[4], 10), branchRank(m[5])], label: m[1] + letter, skey: [5, hallNum, lr, 0, 0] };
   }
-  // 展示場/ホール: 第一展示場 A-4 / 第2ホール B-12
-  m = t.match(/^(第?[0-9一二三四五六七八九十]{1,2}\s*(?:展示場|展示ホール|ホール))\s*([A-Z])?\s*-?\s*(\d{1,3})$/);
+  // 展示場/ホール: 第一展示場 A-4b / 第2ホール B-12
+  m = t.match(/^(第?[0-9一二三四五六七八九十]{1,2}\s*(?:展示場|展示ホール|ホール))\s*([A-Z])?\s*-?\s*(\d{1,3})([A-Z])?$/);
   if(m){
     const numStr = (m[1].match(/[0-9一二三四五六七八九十]{1,2}/) || [''])[0];
     const letter = m[2] || '';
     const lr = letter ? letter.charCodeAt(0) - 64 : 0;
     const bld = m[1].replace(/\s+/g, '');
-    return { key: [6, kanjiNum(numStr) || 99, lr, 0, parseInt(m[3], 10)], label: bld + letter, skey: [6, kanjiNum(numStr) || 99, lr, 0, 0] };
+    return { key: [6, kanjiNum(numStr) || 99, lr, 0, parseInt(m[3], 10), branchRank(m[4])], label: bld + letter, skey: [6, kanjiNum(numStr) || 99, lr, 0, 0] };
   }
   // かな1文字: く-85
-  m = t.match(/^([あ-んァ-ヶ])\s*-\s*(\d{1,3})$/);
+  m = t.match(/^([あ-んァ-ヶ])\s*-\s*(\d{1,3})([A-Z])?$/);
   if(m){
-    return { key: [7, kanaRank(m[1]), 0, 0, parseInt(m[2], 10)], label: m[1], skey: [7, kanaRank(m[1]), 0, 0, 0] };
+    return { key: [7, kanaRank(m[1]), 0, 0, parseInt(m[2], 10), branchRank(m[3])], label: m[1], skey: [7, kanaRank(m[1]), 0, 0, 0] };
   }
   // 英字のみ: A-12
-  m = t.match(/^([A-Z]{1,2})\s*-\s*(\d{1,3})$/);
+  m = t.match(/^([A-Z]{1,2})\s*-\s*(\d{1,3})([A-Z])?$/);
   if(m){
     const r = m[1].charCodeAt(0) - 64;
-    return { key: [8, r, 0, 0, parseInt(m[2], 10)], label: m[1], skey: [8, r, 0, 0, 0] };
+    return { key: [8, r, 0, 0, parseInt(m[2], 10), branchRank(m[3])], label: m[1], skey: [8, r, 0, 0, 0] };
   }
-  // ホール+ブロック: 東A-12 / 西め-5 / 東A 45-12
-  m = t.match(/^(東|西|南|北)\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})\s*(?:(\d{1,2})?\s*[-–ー−‐〜~]\s*)?(\d{1,3})$/);
+  // ホール+ブロック: 東A-12a / 西め-5b / 東A 45-12
+  m = t.match(/^(東|西|南|北)\s*([A-Z]{1,2}|[あ-んァ-ヶ]{1,2})\s*(?:(\d{1,2})?\s*[-–ー−‐〜~]\s*)?(\d{1,3})([A-Z])?$/);
   if(m){
     const hall = m[1], blk = m[2];
     const rank = (hall === '東') ? 0 : (hall === '北') ? 2 : (hall === '西') ? 3 : 4;
-    return { key: [rank, blockRank(blk), m[3] ? parseInt(m[3], 10) : 0, parseInt(m[4], 10)], label: hall + blk, skey: [rank, blockRank(blk), 0, 0, 0] };
+    return { key: [rank, blockRank(blk), m[3] ? parseInt(m[3], 10) : 0, parseInt(m[4], 10), branchRank(m[5])], label: hall + blk, skey: [rank, blockRank(blk), 0, 0, 0] };
   }
-  // ホール+数字: 西3-15 / 東7-8
-  m = t.match(/^(東|西|南|北)\s*(\d{1,2})\s*[-–ー−‐〜~]\s*(\d{1,3})$/);
+  // ホール+数字: 西3-15 / 東7-8b
+  m = t.match(/^(東|西|南|北)\s*(\d{1,2})\s*[-–ー−‐〜~]\s*(\d{1,3})([A-Z])?$/);
   if(m){
     const hall = m[1];
     const rank = (hall === '東') ? 1 : (hall === '北') ? 2 : (hall === '西') ? 3 : 4;
-    return { key: [rank, 0, parseInt(m[2], 10), parseInt(m[3], 10)], label: hall + m[2], skey: [rank, parseInt(m[2], 10), 0, 0, 0] };
+    return { key: [rank, 0, parseInt(m[2], 10), parseInt(m[3], 10), branchRank(m[4])], label: hall + m[2], skey: [rank, parseInt(m[2], 10), 0, 0, 0] };
   }
   return null;
 }
@@ -269,22 +298,24 @@ const SP_TESTS = [
   ['スペース東3-10', '東3-10'],
   ['西3 - 15 (空白入り)', '西3-15'],
   ['委託先は南2-1', '南2-1'],
-  ['コピー本 東7-8b', '東7-8'],
+  ['コピー本 東7-8b', '東7-8b'],
   ['3-15だけの数字', null],
   ['M3-2026春 参加します', null],
   ['東京ビッグサイト 西4-2', '西4-2'],
   ['東1-2 / 東1-3', '東1-2'],
   ['https://x.com/user/status/1234567890123456789', null],
-  ['東A-12a 新刊あります', '東A-12'],
-  ['西め-05b 【新刊】', '西め-5'],
+  ['東A-12a 新刊あります', '東A-12a'],
+  ['東B-21a 側です', '東B-21a'],
+  ['西め-05b 【新刊】', '西め-5b'],
   ['配置は、【く-85】祀色工房です', 'く-85'],
-  ['6号館C こ42a YANKEE.', '6号館C こ42'],
-  ['🐶インテ大阪 ６号館Ｃ お34ｂ', '6号館C お34'],
-  ['スペース：第一展示場 A-04b', '第一展示場 A-4'],
+  ['6号館C こ42a YANKEE.', '6号館C こ42a'],
+  ['🐶インテ大阪 ６号館Ｃ お34ｂ', '6号館C お34b'],
+  ['スペース：第一展示場 A-04b', '第一展示場 A-4b'],
   ['第2ホール B-12 にいます', '第2ホール B-12'],
   ['スペースは A-12 です', 'A-12'],
   ['6号館Cで10時から開始', null],
   ['第一展示場でお待ちしてます', null],
+  ['東A-12pm 開始です', '東A-12'],
 ];
 
 // ================= IndexedDB =================
@@ -1058,19 +1089,13 @@ function renderCard(e){
   main.append(memo);
 
   const actions = el('div', { class: 'actions' });
-  const btnCheck = el('button', { class: e.checked ? 'on' : '', text: '✔ 行った' });
+  const btnCheck = el('button', { class: 'big' + (e.checked ? ' on' : ''), text: '✔ 行った' });
   btnCheck.addEventListener('click', () => toggleCheck(e.key));
-  const btnStar = el('button', { class: 'star' + (e.star ? ' on' : ''), text: '★ 要チェック' });
+  const btnStar = el('button', { class: 'star big' + (e.star ? ' on' : ''), text: '★ 要チェック' });
   btnStar.addEventListener('click', () => toggleStar(e.key));
-  actions.append(btnCheck, btnStar);
-  const linkBtn = el('button', { class: 'link', text: '🔗', title: '元ツイートを開く' });
-  linkBtn.addEventListener('click', () => window.open(e.url, '_blank', 'noopener'));
-  actions.append(linkBtn);
-  {
-    const reBtn = el('button', { text: '🔄 再取得', title: '最新の情報で取り直す(画像・スペース等)' });
-    reBtn.addEventListener('click', () => { toast('再取得しています…(数秒〜)'); enqueueEnrich(e.id, true); });
-    actions.append(reBtn);
-  }
+  const menuBtn = el('button', { class: 'more', text: '…', title: 'その他(リンク/再取得)' });
+  menuBtn.addEventListener('click', () => openEntryMenu(e));
+  actions.append(btnCheck, btnStar, menuBtn);
   main.append(actions);
   card.append(main);
   return card;

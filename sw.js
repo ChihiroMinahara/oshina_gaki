@@ -1,11 +1,11 @@
-/* お品書き帳 Service Worker v2.4.0
+/* お品書き帳 Service Worker v2.4.1
  * - アプリシェル: プリキャッシュ + network-first(3秒タイムアウトでキャッシュへフォールバック)
  * - 画像(pbs.twimg.com): cache-first + 上限500枚(超過分は古い順に削除)
  * - 更新は waiting のまま保持し、ページから SKIP_WAITING メッセージで反映(編集中の強制リロード防止)
  */
 'use strict';
 
-const APP_CACHE = 'ohogaki-app-2.4.0';
+const APP_CACHE = 'ohogaki-app-2.4.1';
 const IMG_CACHE = 'img-v1';
 const IMG_LIMIT = 500;
 const NAV_TIMEOUT = 3000;
