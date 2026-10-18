@@ -1,0 +1,16 @@
+{
+  "name": "お品書き帳",
+  "short_name": "お品書き帳",
+  "description": "コミケ/M3のお品書きツイートを集めて、スペース番号順に巡回するチェックリスト",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#faf7f5",
+  "theme_color": "#e5485f",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
