@@ -1,5 +1,5 @@
-/* お品書き帳 v2.4.1 — app.js
- * 仕様: 仕様書_お品書き帳.md v2.4.1
+/* お品書き帳 v2.4.3 — app.js
+ * 仕様: 仕様書_お品書き帳.md v2.4.3
  * 開発/検証用フック(通常は触らない):
  *   localStorage 'ohogaki_api_base' … GitHub APIベース差し替え(既定 https://api.github.com)
  *   localStorage 'ohogaki_fx_base'  … fxtwitterベース差し替え(既定 https://api.fxtwitter.com)
@@ -7,7 +7,7 @@
 (() => {
 'use strict';
 
-const APP_VERSION = 'v2.4.1';
+const APP_VERSION = 'v2.4.3';
 const DATA_VERSION = 3;
 const LS_KEY = 'ohogaki_cfg_v23';
 const IMG_CACHE_NAME = 'img-v1';
@@ -183,6 +183,15 @@ function kanjiNum(s){
   return map[s] || null;
 }
 
+// 会場名付きSPから会場名を除く(「第一展示場 S-4b」→「S-4b」)。
+// 「第2ホール B-12」のようなホール名は意味を持つため残す。
+function stripVenuePrefix(sp){
+  if(!sp) return sp;
+  const s = String(sp).trim();
+  const out = s.replace(/^第?\s*[0-9一二三四五六七八九十]{1,2}\s*展示場\s*/i, '').trim();
+  return out || s;
+}
+
 function parseSP(text){
   if(!text) return null;
   const t = nfkc(text).toUpperCase();
@@ -193,7 +202,9 @@ function parseSP(text){
   if(m){
     br = m[4] ? m[4].toLowerCase() : '';
     const bld = m[1].replace(/\s+/g, '');
-    return { sp: bld + ' ' + (m[2] ? m[2] + '-' : '') + parseInt(m[3], 10) + br };
+    const space = (m[2] ? m[2] + '-' : '') + parseInt(m[3], 10) + br;
+    // 展示場は会場名をSPに含めない(ソートはスペース本体で統一)。ホール名は残す
+    return { sp: /展示場$/.test(bld) ? space : bld + ' ' + space };
   }
   // ② N号館(インテックス大阪など): 「6号館C こ42a」「６号館Ｃ お34ｂ」
   m = t.match(new RegExp('([0-9]{1,2})\\s*号館\\s*([A-Z])\\s*([あ-んァ-ヶ]{1,2})?\\s*' + S + '?\\s*(\\d{1,3})' + B + G));
@@ -233,7 +244,7 @@ function parseSP(text){
 // canonical SP文字列の解析(並び替え・セクション用)
 function analyzeSP(sp){
   if(!sp) return null;
-  const t = nfkc(String(sp)).toUpperCase().trim();
+  const t = stripVenuePrefix(nfkc(String(sp)).toUpperCase().trim());
   let m;
   // 号館: 6号館C こ42a / 6号館C 42b
   m = t.match(/^([0-9]{1,2}号館)\s*([A-Z])?\s*([あ-んァ-ヶ]{1,2})?\s*(\d{1,3})([A-Z])?$/);
@@ -310,7 +321,9 @@ const SP_TESTS = [
   ['配置は、【く-85】祀色工房です', 'く-85'],
   ['6号館C こ42a YANKEE.', '6号館C こ42a'],
   ['🐶インテ大阪 ６号館Ｃ お34ｂ', '6号館C お34b'],
-  ['スペース：第一展示場 A-04b', '第一展示場 A-4b'],
+  ['スペース：第一展示場 A-04b', 'A-4b'],
+  ['第一展示場 S-4b で頒布', 'S-4b'],
+  ['第2展示場 A-01', 'A-1'],
   ['第2ホール B-12 にいます', '第2ホール B-12'],
   ['スペースは A-12 です', 'A-12'],
   ['6号館Cで10時から開始', null],
@@ -400,6 +413,15 @@ async function reloadAll(){
   const eventsAll = await idbAll('events');
   S.events = eventsAll.filter(e => !e.deletedAt).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   S.entries = await idbAll('entries');
+  // v2.4.3: 「第一展示場 S-4b」等から会場名を除去(SPはスペース本体で統一)
+  for(const rec of S.entries){
+    if(!rec.sp) continue;
+    const cleaned = stripVenuePrefix(rec.sp);
+    if(cleaned !== rec.sp){
+      rec.sp = cleaned;
+      await idbPut('entries', rec);
+    }
+  }
   let ce = await mget('currentEvent');
   if(!ce || !S.events.find(e => e.id === ce)) ce = S.events.length ? S.events[S.events.length - 1].id : null;
   S.currentEvent = ce;
